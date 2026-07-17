@@ -4,6 +4,8 @@ set -Eeuo pipefail
 RELEASE_REPO=${SBP_RELEASE_REPO:-oldwangnewbe/sb-panel}
 VERSION=${SBP_VERSION:-latest}
 SING_BOX_VERSION=${SBP_SING_BOX_VERSION:-1.13.12}
+SING_BOX_RELEASE_VERSION=${SBP_SING_BOX_RELEASE_VERSION:-v0.2.3}
+SNELL_VERSION=5.0.1
 ACME_SH_VERSION=${SBP_ACME_SH_VERSION:-3.1.1}
 APP_ROOT=/opt/sb-panel
 BIN_DIR=${APP_ROOT}/bin
@@ -12,6 +14,8 @@ CONFIG_DIR=/etc/sb-panel
 ENV_FILE=${CONFIG_DIR}/panel.env
 PANEL_BIN=${BIN_DIR}/sb-panel
 SING_BOX_BIN=${BIN_DIR}/sing-box
+SNELL_BIN=${BIN_DIR}/snell-server
+SNELL_CONFIG=${CONFIG_DIR}/snell.conf
 ACTIVE_CONFIG=${CONFIG_DIR}/sing-box.json
 BACKUP_ROOT=/root/sb-panel-backups
 DRY_RUN=${SBP_DRY_RUN:-0}
@@ -96,20 +100,20 @@ esac
 
 install_dependencies() {
   local missing=0
-  for command in curl tar jq openssl flock ss sha256sum; do
+  for command in curl tar unzip jq openssl flock ss sha256sum; do
     command -v "${command}" >/dev/null 2>&1 || missing=1
   done
   [[ ${missing} -eq 0 ]] && return
   log "安装运行依赖"
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -y
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl tar jq openssl util-linux iproute2 passwd
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl tar unzip jq openssl util-linux iproute2 passwd
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y ca-certificates curl tar jq openssl util-linux iproute shadow-utils
+    dnf install -y ca-certificates curl tar unzip jq openssl util-linux iproute shadow-utils
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y ca-certificates curl tar jq openssl util-linux iproute shadow-utils
+    yum install -y ca-certificates curl tar unzip jq openssl util-linux iproute shadow-utils
   else
-    die "无法自动安装依赖，请先安装 curl、tar、jq、openssl、flock、ss 和 sha256sum。"
+    die "无法自动安装依赖，请先安装 curl、tar、unzip、jq、openssl、flock、ss 和 sha256sum。"
   fi
 }
 
@@ -139,6 +143,7 @@ else
 fi
 PANEL_ASSET=sb-panel-linux-${ARCH}
 SING_BOX_ASSET=sing-box-sb-panel-${SING_BOX_VERSION}-linux-${ARCH}
+SNELL_ASSET=snell-server-v${SNELL_VERSION}-linux-$([[ ${ARCH} == arm64 ]] && echo aarch64 || echo amd64).zip
 
 download() {
   local url=$1 target=$2
@@ -147,7 +152,8 @@ download() {
 
 log "下载 SB Panel ${VERSION} (${ARCH})"
 download "${RELEASE_BASE}/${PANEL_ASSET}" "${TMP_DIR}/${PANEL_ASSET}"
-download "${RELEASE_BASE}/${SING_BOX_ASSET}" "${TMP_DIR}/${SING_BOX_ASSET}"
+download "https://github.com/${RELEASE_REPO}/releases/download/${SING_BOX_RELEASE_VERSION}/${SING_BOX_ASSET}" "${TMP_DIR}/${SING_BOX_ASSET}"
+download "https://dl.nssurge.com/snell/${SNELL_ASSET}" "${TMP_DIR}/${SNELL_ASSET}"
 download "${RELEASE_BASE}/checksums.txt" "${TMP_DIR}/checksums.txt"
 expected=$(awk -v file="${PANEL_ASSET}" '$2 == file {print $1}' "${TMP_DIR}/checksums.txt")
 [[ ${expected} =~ ^[0-9a-fA-F]{64}$ ]] || die "发布包缺少有效校验值。"
@@ -157,6 +163,14 @@ expected=$(awk -v file="${SING_BOX_ASSET}" '$2 == file {print $1}' "${TMP_DIR}/c
 [[ ${expected} =~ ^[0-9a-fA-F]{64}$ ]] || die "发布包缺少 sing-box 校验值。"
 actual=$(sha256sum "${TMP_DIR}/${SING_BOX_ASSET}" | awk '{print $1}')
 [[ ${actual} == "${expected}" ]] || die "sing-box 下载文件校验失败，安装已停止。"
+case ${ARCH} in
+  amd64) expected_snell=9bea1c2b9e35b73b31634856c04d18c393072b9e5dcde6a32781d8b8f908c539 ;;
+  arm64) expected_snell=2f178bf5ac468ce1a130454efa40a0603fbbe4e47ecc4880a989f4abc7f824cf ;;
+esac
+actual=$(sha256sum "${TMP_DIR}/${SNELL_ASSET}" | awk '{print $1}')
+[[ ${actual} == "${expected_snell}" ]] || die "官方 Snell Server 下载文件校验失败，安装已停止。"
+unzip -p "${TMP_DIR}/${SNELL_ASSET}" snell-server >"${TMP_DIR}/snell-server"
+chmod 0755 "${TMP_DIR}/snell-server"
 chmod 0755 "${TMP_DIR}/${PANEL_ASSET}"
 chmod 0755 "${TMP_DIR}/${SING_BOX_ASSET}"
 
@@ -185,6 +199,121 @@ panel_port_from_env() {
   printf '%s\n' "${listen##*:}"
 }
 
+env_value() {
+  local key=$1
+  awk -F= -v key="${key}" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "${ENV_FILE}" 2>/dev/null || true
+}
+
+set_env_value() {
+  local key=$1 value=$2 next=${TMP_DIR}/panel.env.next
+  awk -F= -v key="${key}" '$1 != key' "${ENV_FILE}" >"${next}"
+  printf '%s=%s\n' "${key}" "${value}" >>"${next}"
+  install -o root -g sb-panel -m 0640 "${next}" "${ENV_FILE}"
+}
+
+ensure_cert_reload_permissions() {
+  local cert_path=$1 key_path=$2 helper=/usr/local/libexec/sb-panel-web-reload next=${TMP_DIR}/web-reload.next
+  [[ -f ${helper} ]] || return 0
+  grep -Fq '# SB Panel protocol certificate permissions' "${helper}" && return 0
+  awk -v cert="${cert_path}" -v key="${key_path}" '
+    NR == 2 {
+      print
+      print "# SB Panel protocol certificate permissions"
+      print "chown root:sb-panel \047" key "\047"
+      print "chmod 0640 \047" key "\047"
+      print "chmod 0644 \047" cert "\047"
+      next
+    }
+    { print }
+  ' "${helper}" >"${next}"
+  install -o root -g root -m 0755 "${next}" "${helper}"
+}
+
+install_snell_service() {
+  install -o root -g root -m 0755 "${TMP_DIR}/snell-server" "${SNELL_BIN}"
+  cat >"${SNELL_CONFIG}" <<EOF
+[snell-server]
+listen = 0.0.0.0:${SNELL_PORT}
+psk = ${SNELL_PSK}
+EOF
+  chown root:sb-panel "${SNELL_CONFIG}"
+  chmod 0640 "${SNELL_CONFIG}"
+  cat >/etc/systemd/system/snell-sb-panel.service <<'EOF'
+[Unit]
+Description=Official Snell Server for SB Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sb-panel
+Group=sb-panel
+ExecStart=/opt/sb-panel/bin/snell-server -c /etc/sb-panel/snell.conf
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now snell-sb-panel.service >/dev/null
+  systemctl is-active --quiet snell-sb-panel.service || die "Snell 官方服务启动失败，请查看 journalctl -u snell-sb-panel。"
+}
+
+migrate_automatic_protocol_runtime() {
+  local public_host safe cert_path key_path candidate snell_enabled
+  public_host=$(env_value PUBLIC_HOST)
+  SNELL_PORT=$(env_value SNELL_PORT)
+  SNELL_PORT=${SNELL_PORT:-34448}
+  SNELL_PSK=$(env_value SNELL_PSK)
+  SNELL_PSK=${SNELL_PSK:-$(openssl rand -hex 16)}
+  snell_enabled=$(env_value SNELL_ENABLED)
+  snell_enabled=${snell_enabled:-false}
+  set_env_value SNELL_PORT "${SNELL_PORT}"
+  set_env_value SNELL_PSK "${SNELL_PSK}"
+  set_env_value SNELL_ENABLED "${snell_enabled}"
+  install_snell_service
+
+  cert_path=$(env_value TLS_CERT_PATH)
+  key_path=$(env_value TLS_KEY_PATH)
+  if [[ ! -s ${cert_path:-/nonexistent} || ! -s ${key_path:-/nonexistent} ]] && [[ -n ${public_host} ]]; then
+    safe=${public_host//[^A-Za-z0-9.-]/_}
+    for candidate in /etc/nginx /usr/local/openresty /opt/1panel/apps/openresty; do
+      [[ -d ${candidate} ]] || continue
+      cert_path=$(find "${candidate}" -type f -path "*/sb-panel-certs/${safe}/fullchain.pem" -print -quit 2>/dev/null || true)
+      [[ -n ${cert_path} ]] || continue
+      key_path=${cert_path%/fullchain.pem}/privkey.pem
+      [[ -s ${key_path} ]] && break
+    done
+  fi
+  if [[ -n ${public_host} && -s ${cert_path:-/nonexistent} && -s ${key_path:-/nonexistent} ]]; then
+    chown root:sb-panel "${key_path}"
+    chmod 0640 "${key_path}"
+    chmod 0644 "${cert_path}"
+    set_env_value ANYTLS_SERVER_NAME "${public_host}"
+    set_env_value TLS_CERT_PATH "${cert_path}"
+    set_env_value TLS_KEY_PATH "${key_path}"
+    ensure_cert_reload_permissions "${cert_path}" "${key_path}"
+  else
+    warn "没有找到面板域名证书；TLS 协议需要先为面板启用自动 HTTPS。"
+  fi
+}
+
 upgrade_existing() {
   local stamp backup panel_port core_pid_before core_pid_after
   stamp=$(date -u +%Y%m%d-%H%M%S)
@@ -199,10 +328,12 @@ upgrade_existing() {
   [[ ! -f ${DATA_DIR}/sing-box.json ]] || cp -a "${DATA_DIR}/sing-box.json" "${backup}/sing-box.candidate.json"
   [[ ! -f ${ACTIVE_CONFIG} ]] || cp -a "${ACTIVE_CONFIG}" "${backup}/sing-box.active.json"
   install -o root -g root -m 0755 "${TMP_DIR}/${PANEL_ASSET}" "${PANEL_BIN}"
+  migrate_automatic_protocol_runtime
   if ! systemctl start sb-panel.service || ! wait_for_health "${panel_port}"; then
     warn "升级健康检查失败，正在恢复旧版本。"
     systemctl stop sb-panel.service >/dev/null 2>&1 || true
     install -o root -g root -m 0755 "${backup}/sb-panel" "${PANEL_BIN}"
+    install -o root -g sb-panel -m 0640 "${backup}/panel.env" "${ENV_FILE}"
     systemctl start sb-panel.service
     die "升级失败，已恢复。备份：${backup}"
   fi
@@ -306,6 +437,15 @@ else
   VLESS_PORT=${VLESS_REQUESTED}
 fi
 [[ ${VLESS_PORT} != "${PANEL_PORT}" ]] || die "面板监听端口与 VLESS 端口不能相同。"
+
+SNELL_PORT=${SBP_SNELL_PORT:-34448}
+valid_port "${SNELL_PORT}" || die "SBP_SNELL_PORT 无效。"
+while port_in_use "${SNELL_PORT}" || [[ ${SNELL_PORT} == "${PANEL_PORT}" || ${SNELL_PORT} == "${VLESS_PORT}" ]]; do
+  warn "Snell 默认端口 ${SNELL_PORT} 已占用，自动尝试下一个端口。"
+  SNELL_PORT=$((SNELL_PORT + 1))
+  valid_port "${SNELL_PORT}" || die "没有找到可用的 Snell 端口。"
+done
+SNELL_PSK=${SBP_SNELL_PSK:-$(openssl rand -hex 16)}
 
 REALITY_SERVER=${SBP_REALITY_SERVER:-www.apple.com}
 REALITY_SERVER=$(prompt "Reality 伪装/握手域名" "${REALITY_SERVER}")
@@ -518,6 +658,10 @@ write_reload_helper() {
     cat >/usr/local/libexec/sb-panel-web-reload <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+# SB Panel protocol certificate permissions
+chown root:sb-panel '${WEB_CERT_HOST}/privkey.pem'
+chmod 0640 '${WEB_CERT_HOST}/privkey.pem'
+chmod 0644 '${WEB_CERT_HOST}/fullchain.pem'
 docker exec '${WEB_CONTAINER}' '${WEB_BINARY}' -t
 docker exec '${WEB_CONTAINER}' '${WEB_BINARY}' -s reload
 EOF
@@ -525,6 +669,10 @@ EOF
     cat >/usr/local/libexec/sb-panel-web-reload <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+# SB Panel protocol certificate permissions
+chown root:sb-panel '${WEB_CERT_HOST}/privkey.pem'
+chmod 0640 '${WEB_CERT_HOST}/privkey.pem'
+chmod 0644 '${WEB_CERT_HOST}/fullchain.pem'
 '${WEB_BINARY}' -t
 if systemctl list-unit-files '${WEB_SERVICE}.service' --no-legend 2>/dev/null | grep -q .; then
   systemctl reload '${WEB_SERVICE}'
@@ -742,9 +890,18 @@ prepare_tls
 if [[ ${TLS_ENABLED} == 1 ]]; then
   PANEL_BIND_HOST=${WEB_PROXY_HOST}
   PANEL_COOKIE_SECURE=true
+  TLS_SERVER_NAME=${PUBLIC_HOST}
+  TLS_CERT_FILE=${WEB_CERT_HOST}/fullchain.pem
+  TLS_KEY_FILE=${WEB_CERT_HOST}/privkey.pem
+  chown root:sb-panel "${TLS_KEY_FILE}"
+  chmod 0640 "${TLS_KEY_FILE}"
+  chmod 0644 "${TLS_CERT_FILE}"
 else
   PANEL_BIND_HOST=0.0.0.0
   PANEL_COOKIE_SECURE=false
+  TLS_SERVER_NAME=
+  TLS_CERT_FILE=
+  TLS_KEY_FILE=
 fi
 
 umask 077
@@ -774,9 +931,17 @@ VLESS_LISTEN_PORT=${VLESS_PORT}
 REALITY_SERVER=${REALITY_SERVER}
 REALITY_HANDSHAKE_SERVER=${REALITY_SERVER}
 REALITY_PORT=443
+ANYTLS_SERVER_NAME=${TLS_SERVER_NAME}
+TLS_CERT_PATH=${TLS_CERT_FILE}
+TLS_KEY_PATH=${TLS_KEY_FILE}
+SNELL_ENABLED=false
+SNELL_PORT=${SNELL_PORT}
+SNELL_PSK=${SNELL_PSK}
 EOF
 chown root:sb-panel "${ENV_FILE}"
 chmod 0640 "${ENV_FILE}"
+
+install_snell_service
 
 cat >/usr/local/libexec/sb-panel-sing-box-run <<'EOF'
 #!/bin/sh
