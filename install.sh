@@ -215,7 +215,7 @@ upgrade_existing() {
 }
 
 if [[ -x ${PANEL_BIN} && -f ${ENV_FILE} ]]; then
-  if [[ -f /etc/systemd/system/sb-panel.service && -f /etc/systemd/system/sing-box-sb-panel.service ]]; then
+  if [[ -f /etc/systemd/system/sb-panel.service && -f /etc/systemd/system/sing-box-sb-panel.service && -s ${ACTIVE_CONFIG} ]]; then
     upgrade_existing
     exit 0
   fi
