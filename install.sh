@@ -138,6 +138,7 @@ else
   RELEASE_BASE="https://github.com/${RELEASE_REPO}/releases/download/${VERSION}"
 fi
 PANEL_ASSET=sb-panel-linux-${ARCH}
+SING_BOX_ASSET=sing-box-sb-panel-${SING_BOX_VERSION}-linux-${ARCH}
 
 download() {
   local url=$1 target=$2
@@ -146,12 +147,18 @@ download() {
 
 log "下载 SB Panel ${VERSION} (${ARCH})"
 download "${RELEASE_BASE}/${PANEL_ASSET}" "${TMP_DIR}/${PANEL_ASSET}"
+download "${RELEASE_BASE}/${SING_BOX_ASSET}" "${TMP_DIR}/${SING_BOX_ASSET}"
 download "${RELEASE_BASE}/checksums.txt" "${TMP_DIR}/checksums.txt"
 expected=$(awk -v file="${PANEL_ASSET}" '$2 == file {print $1}' "${TMP_DIR}/checksums.txt")
 [[ ${expected} =~ ^[0-9a-fA-F]{64}$ ]] || die "发布包缺少有效校验值。"
 actual=$(sha256sum "${TMP_DIR}/${PANEL_ASSET}" | awk '{print $1}')
 [[ ${actual} == "${expected}" ]] || die "下载文件校验失败，安装已停止。"
+expected=$(awk -v file="${SING_BOX_ASSET}" '$2 == file {print $1}' "${TMP_DIR}/checksums.txt")
+[[ ${expected} =~ ^[0-9a-fA-F]{64}$ ]] || die "发布包缺少 sing-box 校验值。"
+actual=$(sha256sum "${TMP_DIR}/${SING_BOX_ASSET}" | awk '{print $1}')
+[[ ${actual} == "${expected}" ]] || die "sing-box 下载文件校验失败，安装已停止。"
 chmod 0755 "${TMP_DIR}/${PANEL_ASSET}"
+chmod 0755 "${TMP_DIR}/${SING_BOX_ASSET}"
 
 if [[ ${DRY_RUN} == 1 ]]; then
   log "检查通过：发布包可下载，SHA-256 校验正确。"
@@ -208,8 +215,11 @@ upgrade_existing() {
 }
 
 if [[ -x ${PANEL_BIN} && -f ${ENV_FILE} ]]; then
-  upgrade_existing
-  exit 0
+  if [[ -f /etc/systemd/system/sb-panel.service && -f /etc/systemd/system/sing-box-sb-panel.service ]]; then
+    upgrade_existing
+    exit 0
+  fi
+  warn "检测到一次未完成的 SB Panel 安装，将安全续装并保留现有数据和证书。"
 fi
 
 port_in_use() {
@@ -599,6 +609,12 @@ EOF
     fi
   fi
 
+  if [[ -s ${WEB_CERT_HOST}/fullchain.pem && -s ${WEB_CERT_HOST}/privkey.pem ]] && openssl x509 -in "${WEB_CERT_HOST}/fullchain.pem" -noout -checkend 0 >/dev/null 2>&1; then
+    log "复用已签发的 Let's Encrypt 证书，不重复申请。"
+    write_reload_helper
+    return 0
+  fi
+
   log "安装固定版本 acme.sh ${ACME_SH_VERSION}"
   download "https://github.com/acmesh-official/acme.sh/archive/refs/tags/${ACME_SH_VERSION}.tar.gz" "${TMP_DIR}/acme.sh.tar.gz"
   tar -xzf "${TMP_DIR}/acme.sh.tar.gz" -C "${TMP_DIR}"
@@ -706,12 +722,10 @@ EOF
   TLS_ROLLBACK_PENDING=0
 }
 
-log "安装 sing-box ${SING_BOX_VERSION}"
-SING_BOX_ARCHIVE=sing-box-${SING_BOX_VERSION}-linux-${ARCH}.tar.gz
-download "https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/${SING_BOX_ARCHIVE}" "${TMP_DIR}/${SING_BOX_ARCHIVE}"
-tar -xzf "${TMP_DIR}/${SING_BOX_ARCHIVE}" -C "${TMP_DIR}"
-SING_BOX_SOURCE=$(find "${TMP_DIR}" -type f -name sing-box -print -quit)
-[[ -n ${SING_BOX_SOURCE} ]] || die "sing-box 发布包内容无效。"
+log "安装 SB Panel 兼容版 sing-box ${SING_BOX_VERSION}"
+SING_BOX_SOURCE=${TMP_DIR}/${SING_BOX_ASSET}
+[[ -x ${SING_BOX_SOURCE} ]] || die "sing-box 发布包内容无效。"
+"${SING_BOX_SOURCE}" version | grep -q 'with_v2ray_api' || die "下载的 sing-box 缺少流量统计支持，安装已停止。"
 
 if ! id sb-panel >/dev/null 2>&1; then
   useradd --system --home-dir "${APP_ROOT}" --shell /usr/sbin/nologin sb-panel
