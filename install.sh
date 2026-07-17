@@ -578,8 +578,14 @@ server {
 EOF
   apply_web_config "${TMP_DIR}/sb-panel-http.conf"
 
+  local preflight_body=
   printf 'sb-panel-acme-ok\n' >"${WEB_ROOT_HOST}/.well-known/acme-challenge/preflight"
-  if [[ $(curl --noproxy '*' -fsS --max-time 5 --resolve "${PUBLIC_HOST}:80:127.0.0.1" "http://${PUBLIC_HOST}/.well-known/acme-challenge/preflight" 2>/dev/null || true) != sb-panel-acme-ok ]]; then
+  for _ in {1..20}; do
+    preflight_body=$(curl --noproxy '*' -fsS --max-time 3 --resolve "${PUBLIC_HOST}:80:127.0.0.1" "http://${PUBLIC_HOST}/.well-known/acme-challenge/preflight" 2>/dev/null || true)
+    [[ ${preflight_body} == sb-panel-acme-ok ]] && break
+    sleep 0.25
+  done
+  if [[ ${preflight_body} != sb-panel-acme-ok ]]; then
     die "本机 HTTP-01 预检失败：OpenResty/Nginx 未正确提供 ACME 验证目录。"
   fi
   rm -f "${WEB_ROOT_HOST}/.well-known/acme-challenge/preflight"
@@ -619,7 +625,7 @@ EOF
 
 finalize_tls() {
   [[ ${TLS_ENABLED} == 1 ]] || return 0
-  local redirect_port=
+  local redirect_port='' health_ready=0
   [[ ${PANEL_PUBLIC_PORT} != 443 ]] && redirect_port=:${PANEL_PUBLIC_PORT}
   cat >"${TMP_DIR}/sb-panel-https.conf" <<EOF
 # Managed by SB Panel. Manual changes may be replaced by the installer.
@@ -660,7 +666,14 @@ server {
 }
 EOF
   apply_web_config "${TMP_DIR}/sb-panel-https.conf"
-  if ! curl --noproxy '*' -fsS --max-time 8 --resolve "${PUBLIC_HOST}:${PANEL_PUBLIC_PORT}:127.0.0.1" "${PUBLIC_BASE_URL}/healthz" >/dev/null; then
+  for _ in {1..20}; do
+    if curl --noproxy '*' -fsS --max-time 3 --resolve "${PUBLIC_HOST}:${PANEL_PUBLIC_PORT}:127.0.0.1" "${PUBLIC_BASE_URL}/healthz" >/dev/null; then
+      health_ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ ${health_ready} != 1 ]]; then
     die "HTTPS 反向代理健康检查失败，正在自动恢复 Web 配置。"
   fi
 
