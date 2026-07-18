@@ -15,7 +15,6 @@ ENV_FILE=${CONFIG_DIR}/panel.env
 PANEL_BIN=${BIN_DIR}/sb-panel
 SING_BOX_BIN=${BIN_DIR}/sing-box
 SNELL_BIN=${BIN_DIR}/snell-server
-SNELL_CONFIG=${CONFIG_DIR}/snell.conf
 ACTIVE_CONFIG=${CONFIG_DIR}/sing-box.json
 BACKUP_ROOT=/root/sb-panel-backups
 DRY_RUN=${SBP_DRY_RUN:-0}
@@ -251,7 +250,7 @@ install_snell_service() {
 }
 
 migrate_automatic_protocol_runtime() {
-  local public_host safe cert_path key_path candidate snell_enabled
+  local public_host safe cert_path key_path candidate snell_enabled agent_token central_enabled
   public_host=$(env_value PUBLIC_HOST)
   SNELL_PORT=$(env_value SNELL_PORT)
   SNELL_PORT=${SNELL_PORT:-34448}
@@ -262,6 +261,12 @@ migrate_automatic_protocol_runtime() {
   set_env_value SNELL_PORT "${SNELL_PORT}"
   set_env_value SNELL_PSK "${SNELL_PSK}"
   set_env_value SNELL_ENABLED "${snell_enabled}"
+  central_enabled=$(env_value PANEL_CENTRAL_ENABLED)
+  central_enabled=${central_enabled:-false}
+  agent_token=$(env_value PANEL_AGENT_TOKEN)
+  agent_token=${agent_token:-$(openssl rand -hex 32)}
+  set_env_value PANEL_CENTRAL_ENABLED "${central_enabled}"
+  set_env_value PANEL_AGENT_TOKEN "${agent_token}"
   install_snell_service
 
   cert_path=$(env_value TLS_CERT_PATH)
@@ -421,6 +426,13 @@ while port_in_use "${SNELL_PORT}" || [[ ${SNELL_PORT} == "${PANEL_PORT}" || ${SN
   valid_port "${SNELL_PORT}" || die "没有找到可用的 Snell 端口。"
 done
 SNELL_PSK=${SBP_SNELL_PSK:-$(openssl rand -hex 16)}
+PANEL_AGENT_TOKEN=${SBP_AGENT_TOKEN:-$(openssl rand -hex 32)}
+PANEL_CENTRAL_ENABLED=${SBP_CENTRAL_ENABLED:-false}
+case ${PANEL_CENTRAL_ENABLED,,} in
+  1|yes|true|on) PANEL_CENTRAL_ENABLED=true ;;
+  0|no|false|off) PANEL_CENTRAL_ENABLED=false ;;
+  *) die "SBP_CENTRAL_ENABLED 仅支持 true 或 false。" ;;
+esac
 
 REALITY_SERVER=${SBP_REALITY_SERVER:-www.apple.com}
 REALITY_SERVER=$(prompt "Reality 伪装/握手域名" "${REALITY_SERVER}")
@@ -887,6 +899,8 @@ PANEL_LISTEN=${PANEL_BIND_HOST}:${PANEL_PORT}
 PANEL_ADMIN_USER=${ADMIN_USER}
 PANEL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
 PANEL_COOKIE_SECURE=${PANEL_COOKIE_SECURE}
+PANEL_CENTRAL_ENABLED=${PANEL_CENTRAL_ENABLED}
+PANEL_AGENT_TOKEN=${PANEL_AGENT_TOKEN}
 PANEL_CORE_MODE=systemd
 PANEL_MANAGE_CORE=false
 SINGBOX_BIN=${SING_BOX_BIN}
