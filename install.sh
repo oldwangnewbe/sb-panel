@@ -144,6 +144,7 @@ fi
 PANEL_ASSET=sb-panel-linux-${ARCH}
 SING_BOX_ASSET=sing-box-sb-panel-${SING_BOX_VERSION}-linux-${ARCH}
 SNELL_ASSET=snell-server-v${SNELL_VERSION}-linux-$([[ ${ARCH} == arm64 ]] && echo aarch64 || echo amd64).zip
+RUNTIME_ASSET=sb-panel-runtime.tar.gz
 
 download() {
   local url=$1 target=$2
@@ -154,11 +155,16 @@ log "下载 SB Panel ${VERSION} (${ARCH})"
 download "${RELEASE_BASE}/${PANEL_ASSET}" "${TMP_DIR}/${PANEL_ASSET}"
 download "https://github.com/${RELEASE_REPO}/releases/download/${SING_BOX_RELEASE_VERSION}/${SING_BOX_ASSET}" "${TMP_DIR}/${SING_BOX_ASSET}"
 download "https://dl.nssurge.com/snell/${SNELL_ASSET}" "${TMP_DIR}/${SNELL_ASSET}"
+download "${RELEASE_BASE}/${RUNTIME_ASSET}" "${TMP_DIR}/${RUNTIME_ASSET}"
 download "${RELEASE_BASE}/checksums.txt" "${TMP_DIR}/checksums.txt"
 expected=$(awk -v file="${PANEL_ASSET}" '$2 == file {print $1}' "${TMP_DIR}/checksums.txt")
 [[ ${expected} =~ ^[0-9a-fA-F]{64}$ ]] || die "发布包缺少有效校验值。"
 actual=$(sha256sum "${TMP_DIR}/${PANEL_ASSET}" | awk '{print $1}')
 [[ ${actual} == "${expected}" ]] || die "下载文件校验失败，安装已停止。"
+expected=$(awk -v file="${RUNTIME_ASSET}" '$2 == file {print $1}' "${TMP_DIR}/checksums.txt")
+[[ ${expected} =~ ^[0-9a-fA-F]{64}$ ]] || die "发布包缺少运行时脚本校验值。"
+actual=$(sha256sum "${TMP_DIR}/${RUNTIME_ASSET}" | awk '{print $1}')
+[[ ${actual} == "${expected}" ]] || die "运行时脚本校验失败，安装已停止。"
 expected=$(awk -v file="${SING_BOX_ASSET}" '$2 == file {print $1}' "${TMP_DIR}/checksums.txt")
 [[ ${expected} =~ ^[0-9a-fA-F]{64}$ ]] || die "发布包缺少 sing-box 校验值。"
 actual=$(sha256sum "${TMP_DIR}/${SING_BOX_ASSET}" | awk '{print $1}')
@@ -170,6 +176,8 @@ esac
 actual=$(sha256sum "${TMP_DIR}/${SNELL_ASSET}" | awk '{print $1}')
 [[ ${actual} == "${expected_snell}" ]] || die "官方 Snell Server 下载文件校验失败，安装已停止。"
 unzip -p "${TMP_DIR}/${SNELL_ASSET}" snell-server >"${TMP_DIR}/snell-server"
+install -d -m 0700 "${TMP_DIR}/runtime"
+tar -xzf "${TMP_DIR}/${RUNTIME_ASSET}" -C "${TMP_DIR}/runtime"
 chmod 0755 "${TMP_DIR}/snell-server"
 chmod 0755 "${TMP_DIR}/${PANEL_ASSET}"
 chmod 0755 "${TMP_DIR}/${SING_BOX_ASSET}"
@@ -231,48 +239,15 @@ ensure_cert_reload_permissions() {
 
 install_snell_service() {
   install -o root -g root -m 0755 "${TMP_DIR}/snell-server" "${SNELL_BIN}"
-  cat >"${SNELL_CONFIG}" <<EOF
-[snell-server]
-listen = 0.0.0.0:${SNELL_PORT}
-psk = ${SNELL_PSK}
-EOF
-  chown root:sb-panel "${SNELL_CONFIG}"
-  chmod 0640 "${SNELL_CONFIG}"
-  cat >/etc/systemd/system/snell-sb-panel.service <<'EOF'
-[Unit]
-Description=Official Snell Server for SB Panel
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=sb-panel
-Group=sb-panel
-ExecStart=/opt/sb-panel/bin/snell-server -c /etc/sb-panel/snell.conf
-Restart=on-failure
-RestartSec=2s
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-RestrictSUIDSGID=true
-LockPersonality=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  install -o root -g root -m 0755 "${TMP_DIR}/runtime/sb-panel-snell-apply.sh" /usr/local/libexec/sb-panel-snell-apply
+  install -o root -g root -m 0755 "${TMP_DIR}/runtime/sb-panel-snell-run.sh" /usr/local/libexec/sb-panel-snell-run
+  install -o root -g root -m 0644 "${TMP_DIR}/runtime/snell-sb-panel@.service" /etc/systemd/system/snell-sb-panel@.service
+  install -o root -g root -m 0644 "${TMP_DIR}/runtime/snell-sb-panel-apply.service" /etc/systemd/system/snell-sb-panel-apply.service
+  install -o root -g root -m 0644 "${TMP_DIR}/runtime/snell-sb-panel-apply.path" /etc/systemd/system/snell-sb-panel-apply.path
+  install -d -o root -g sb-panel -m 0750 /etc/sb-panel/snell-users
   systemctl daemon-reload
-  systemctl enable --now snell-sb-panel.service >/dev/null
-  systemctl is-active --quiet snell-sb-panel.service || die "Snell 官方服务启动失败，请查看 journalctl -u snell-sb-panel。"
+  systemctl enable --now snell-sb-panel-apply.path >/dev/null
+  systemctl is-active --quiet snell-sb-panel-apply.path || die "Snell 用户服务同步器启动失败。"
 }
 
 migrate_automatic_protocol_runtime() {
@@ -915,10 +890,14 @@ PANEL_COOKIE_SECURE=${PANEL_COOKIE_SECURE}
 PANEL_CORE_MODE=systemd
 PANEL_MANAGE_CORE=false
 SINGBOX_BIN=${SING_BOX_BIN}
+SNELL_BIN=${SNELL_BIN}
 SINGBOX_CONFIG=${DATA_DIR}/sing-box.json
 SINGBOX_LOG=${DATA_DIR}/sing-box.log
 CORE_APPLY_REQUEST=${DATA_DIR}/core-apply.request
 CORE_APPLY_RESULT=${DATA_DIR}/core-apply.result
+SNELL_MANIFEST=${DATA_DIR}/snell-users.json
+SNELL_APPLY_REQUEST=${DATA_DIR}/snell-apply.request
+SNELL_APPLY_RESULT=${DATA_DIR}/snell-apply.result
 CORE_PID_FILE=/run/sb-panel-sing-box/main.pid
 CORE_APPLY_TIMEOUT=25s
 PUBLIC_HOST=${PUBLIC_HOST}
@@ -1148,7 +1127,7 @@ chmod 0600 "${DATA_DIR}/panel.db"
 install -o root -g sb-panel -m 0640 "${DATA_DIR}/sing-box.json" "${ACTIVE_CONFIG}"
 
 systemctl daemon-reload
-systemctl enable sing-box-sb-panel.service sing-box-sb-panel-apply.path sb-panel.service >/dev/null
+systemctl enable sing-box-sb-panel.service sing-box-sb-panel-apply.path snell-sb-panel-apply.path sb-panel.service >/dev/null
 systemctl start sing-box-sb-panel.service
 systemctl start sing-box-sb-panel-apply.path
 systemctl start sb-panel.service
