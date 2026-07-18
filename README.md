@@ -93,6 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/oldwangnewbe/sb-panel/main/install.
 - HTTP-01 只能通过公网 80 完成；防火墙、安全组和上游网络必须允许该端口。
 - 完整源码保存在私有仓库；公开发行包不代表源码开放授权。
 - 数据库、订阅凭证、TOTP 密钥和落地节点凭证仅应保存在自己的服务器。
+- Snell 为每位获授权用户自动分配从 `SNELL_PORT` 开始的独立 TCP 端口；使用主机防火墙或云安全组时，需要允许实际分配的端口。
 
 ## 服务与目录
 
@@ -104,13 +105,15 @@ curl -fsSL https://raw.githubusercontent.com/oldwangnewbe/sb-panel/main/install.
 sb-panel.service                    面板控制面
 sing-box-sb-panel.service           sing-box 数据面
 sing-box-sb-panel-apply.path        配置更新监听
+snell-sb-panel@.service             每用户独立的官方 Snell 实例
+snell-sb-panel-apply.path           Snell 授权撤销与实例同步
 sb-panel-cert-renew.timer           HTTPS 证书自动续期（启用 TLS 时）
 ```
 
 查看状态：
 
 ```bash
-systemctl status sb-panel sing-box-sb-panel sing-box-sb-panel-apply.path
+systemctl status sb-panel sing-box-sb-panel sing-box-sb-panel-apply.path snell-sb-panel-apply.path
 ```
 
 ## 授权
