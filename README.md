@@ -1,14 +1,14 @@
-# SB Panel
+# SailBox
 
 > 私有发行的 sing-box 管理面板，面向个人、家庭与多服务器使用。
 
-![SB Panel overview](assets/overview.svg)
+![SailBox overview](assets/overview.svg)
 
 ## 一个面板，统一管理
 
 - 一键启用 VLESS Reality、Trojan、AnyTLS、TUIC、Hysteria2、Snell
 - 管理用户、流量配额、到期时间、订阅与客户端导入
-- 统一管理多台服务器，并生成聚合订阅
+- 用户分组、跨服务器管理与聚合订阅
 - sing-box 由独立 systemd 服务运行，面板只负责配置、校验与重载
 
 ## 一键安装
@@ -23,4 +23,4 @@ curl -fsSL https://raw.githubusercontent.com/oldwangnewbe/sb-panel/main/install.
 
 ## 发行方式
 
-本仓库仅提供安装器、使用说明和已编译的发行文件；SB Panel 核心源码不公开。详见 [LICENSE](LICENSE)。
+本仓库仅提供安装器、使用说明和已编译的发行文件；SailBox 核心源码不公开。详见 [LICENSE](LICENSE)。
