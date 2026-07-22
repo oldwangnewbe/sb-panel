@@ -35,9 +35,9 @@ WEB_BINARY=
 WEB_SERVICE=
 TLS_ROLLBACK_PENDING=0
 
-log() { printf '\033[1;35m[SB Panel]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[SB Panel]\033[0m %s\n' "$*" >&2; }
-die() { printf '\033[1;31m[SB Panel]\033[0m %s\n' "$*" >&2; exit 1; }
+log() { printf '\033[1;35m[SailBox]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[SailBox]\033[0m %s\n' "$*" >&2; }
+die() { printf '\033[1;31m[SailBox]\033[0m %s\n' "$*" >&2; exit 1; }
 
 has_tty() { [[ ${NONINTERACTIVE} != 1 && -r /dev/tty && -w /dev/tty ]]; }
 
@@ -150,7 +150,7 @@ download() {
   curl --fail --location --silent --show-error --retry 3 --connect-timeout 12 --output "${target}" "${url}"
 }
 
-log "下载 SB Panel ${VERSION} (${ARCH})"
+log "下载 SailBox ${VERSION} (${ARCH})"
 download "${RELEASE_BASE}/${PANEL_ASSET}" "${TMP_DIR}/${PANEL_ASSET}"
 download "https://github.com/${RELEASE_REPO}/releases/download/${SING_BOX_RELEASE_VERSION}/${SING_BOX_ASSET}" "${TMP_DIR}/${SING_BOX_ASSET}"
 download "https://dl.nssurge.com/snell/${SNELL_ASSET}" "${TMP_DIR}/${SNELL_ASSET}"
@@ -221,11 +221,11 @@ set_env_value() {
 ensure_cert_reload_permissions() {
   local cert_path=$1 key_path=$2 helper=/usr/local/libexec/sb-panel-web-reload next=${TMP_DIR}/web-reload.next
   [[ -f ${helper} ]] || return 0
-  grep -Fq '# SB Panel protocol certificate permissions' "${helper}" && return 0
+  grep -Fq '# SailBox protocol certificate permissions' "${helper}" && return 0
   awk -v cert="${cert_path}" -v key="${key_path}" '
     NR == 2 {
       print
-      print "# SB Panel protocol certificate permissions"
+      print "# SailBox protocol certificate permissions"
       print "chown root:sb-panel \047" key "\047"
       print "chmod 0640 \047" key "\047"
       print "chmod 0644 \047" cert "\047"
@@ -330,7 +330,7 @@ if [[ -x ${PANEL_BIN} && -f ${ENV_FILE} ]]; then
     upgrade_existing
     exit 0
   fi
-  warn "检测到一次未完成的 SB Panel 安装，将安全续装并保留现有数据和证书。"
+  warn "检测到一次未完成的 SailBox 安装，将安全续装并保留现有数据和证书。"
 fi
 
 port_in_use() {
@@ -645,7 +645,7 @@ write_reload_helper() {
     cat >/usr/local/libexec/sb-panel-web-reload <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-# SB Panel protocol certificate permissions
+# SailBox protocol certificate permissions
 chown root:sb-panel '${WEB_CERT_HOST}/privkey.pem'
 chmod 0640 '${WEB_CERT_HOST}/privkey.pem'
 chmod 0644 '${WEB_CERT_HOST}/fullchain.pem'
@@ -656,7 +656,7 @@ EOF
     cat >/usr/local/libexec/sb-panel-web-reload <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-# SB Panel protocol certificate permissions
+# SailBox protocol certificate permissions
 chown root:sb-panel '${WEB_CERT_HOST}/privkey.pem'
 chmod 0640 '${WEB_CERT_HOST}/privkey.pem'
 chmod 0644 '${WEB_CERT_HOST}/fullchain.pem'
@@ -681,7 +681,7 @@ prepare_tls() {
   WEB_CONFIG_FILE=${WEB_CONF_HOST}/zz-sb-panel-${safe}.conf
   expanded=$(web_dump)
   if grep -E "server_name[[:space:]]+([^;[:space:]]+[[:space:]]+)*${PUBLIC_HOST//./\\.}([[:space:];])" <<<"${expanded}" >/dev/null; then
-    if [[ ! -f ${WEB_CONFIG_FILE} ]] || ! grep -F "Managed by SB Panel" "${WEB_CONFIG_FILE}" >/dev/null; then
+    if [[ ! -f ${WEB_CONFIG_FILE} ]] || ! grep -F "Managed by SailBox" "${WEB_CONFIG_FILE}" >/dev/null; then
       die "域名 ${PUBLIC_HOST} 已存在于当前 Web 配置中。为防止覆盖现有网站，请换一个面板子域名。"
     fi
   fi
@@ -707,7 +707,7 @@ prepare_tls() {
   TLS_ROLLBACK_PENDING=1
 
   cat >"${TMP_DIR}/sb-panel-http.conf" <<EOF
-# Managed by SB Panel. Manual changes may be replaced by the installer.
+# Managed by SailBox. Manual changes may be replaced by the installer.
 server {
     listen 80;
     server_name ${PUBLIC_HOST};
@@ -779,7 +779,7 @@ finalize_tls() {
   local redirect_port='' health_ready=0
   [[ ${PANEL_PUBLIC_PORT} != 443 ]] && redirect_port=:${PANEL_PUBLIC_PORT}
   cat >"${TMP_DIR}/sb-panel-https.conf" <<EOF
-# Managed by SB Panel. Manual changes may be replaced by the installer.
+# Managed by SailBox. Manual changes may be replaced by the installer.
 server {
     listen 80;
     server_name ${PUBLIC_HOST};
@@ -830,7 +830,7 @@ EOF
 
   cat >/etc/systemd/system/sb-panel-cert-renew.service <<EOF
 [Unit]
-Description=Renew SB Panel TLS certificate
+Description=Renew SailBox TLS certificate
 After=network-online.target
 Wants=network-online.target
 
@@ -842,7 +842,7 @@ NoNewPrivileges=true
 EOF
   cat >/etc/systemd/system/sb-panel-cert-renew.timer <<'EOF'
 [Unit]
-Description=Daily SB Panel certificate renewal check
+Description=Daily SailBox certificate renewal check
 
 [Timer]
 OnCalendar=*-*-* 03:17:00
@@ -857,7 +857,7 @@ EOF
   TLS_ROLLBACK_PENDING=0
 }
 
-log "安装 SB Panel 兼容版 sing-box ${SING_BOX_VERSION}"
+log "安装 SailBox 兼容版 sing-box ${SING_BOX_VERSION}"
 SING_BOX_SOURCE=${TMP_DIR}/${SING_BOX_ASSET}
 [[ -x ${SING_BOX_SOURCE} ]] || die "sing-box 发布包内容无效。"
 "${SING_BOX_SOURCE}" version | grep -q 'with_v2ray_api' || die "下载的 sing-box 缺少流量统计支持，安装已停止。"
@@ -1004,7 +1004,7 @@ chmod 0755 /usr/local/libexec/sb-panel-sing-box-apply
 
 cat >/etc/systemd/system/sb-panel.service <<'EOF'
 [Unit]
-Description=SB Panel control plane
+Description=SailBox control plane
 After=network-online.target sing-box-sb-panel.service
 Wants=network-online.target sing-box-sb-panel.service
 
@@ -1044,7 +1044,7 @@ EOF
 
 cat >/etc/systemd/system/sing-box-sb-panel.service <<'EOF'
 [Unit]
-Description=sing-box data plane for SB Panel
+Description=sing-box data plane for SailBox
 After=network-online.target
 Wants=network-online.target
 
@@ -1087,7 +1087,7 @@ EOF
 
 cat >/etc/systemd/system/sing-box-sb-panel-apply.service <<'EOF'
 [Unit]
-Description=Validate and atomically apply SB Panel sing-box configuration
+Description=Validate and atomically apply SailBox sing-box configuration
 After=sing-box-sb-panel.service
 
 [Service]
@@ -1117,7 +1117,7 @@ EOF
 
 cat >/etc/systemd/system/sing-box-sb-panel-apply.path <<'EOF'
 [Unit]
-Description=Watch for SB Panel sing-box apply requests
+Description=Watch for SailBox sing-box apply requests
 
 [Path]
 PathChanged=/opt/sb-panel/data/core-apply.request
@@ -1153,7 +1153,7 @@ fi
 finalize_tls
 
 cat >${BACKUP_ROOT}/credentials.txt <<EOF
-SB Panel URL: ${PUBLIC_BASE_URL}
+SailBox URL: ${PUBLIC_BASE_URL}
 Username: ${ADMIN_USER}
 Password: ${ADMIN_PASSWORD}
 VLESS port: ${VLESS_PORT}
